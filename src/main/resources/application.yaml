@@ -1,0 +1,21 @@
+spring:
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/realtime
+    username: root
+    password: passwordgit
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+
+  application:
+    name: realtime
+
+jwt:
+  secret: my-super-secret-key-for-realtime-project-123456789
+  expiration: 300000
+
+server:
+  port: 8080
