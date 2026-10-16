@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realtime Collaboration Chat</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 650px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f4f7fb;
+        }
+
+        h2 {
+            color: #243b53;
+        }
+
+        .panel {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 3px 12px #0001;
+        }
+
+        #status {
+            margin-bottom: 16px;
+            font-weight: bold;
+        }
+
+        input, button {
+            padding: 10px;
+            margin: 5px 0;
+            box-sizing: border-box;
+        }
+
+        input {
+            width: 100%;
+        }
+
+        button {
+            border: 0;
+            border-radius: 6px;
+            cursor: pointer;
+            background: #2563eb;
+            color: white;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        #messages {
+            height: 260px;
+            overflow-y: auto;
+            background: #f8fafc;
+            padding: 12px;
+            margin: 15px 0;
+            border: 1px solid #ddd;
+        }
+
+        .message {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            overflow-wrap: anywhere;
+        }
+
+        label {
+            display: block;
+            margin-top: 12px;
+        }
+    </style>
+</head>
+
+<body>
+<div class="panel">
+    <h2>💬 Realtime Chat</h2>
+
+    <div id="status">Connecting...</div>
+
+    <label for="sender">Your name</label>
+    <input id="sender" value="User1" maxlength="50">
+
+    <label for="jwtToken">JWT Token</label>
+    <input
+            id="jwtToken"
+            type="password"
+            placeholder="Paste your login JWT token"
+            autocomplete="off"
+    >
+
+    <button type="button" id="loadHistory">
+        Load Chat History
+    </button>
+
+    <div id="messages"></div>
+
+    <form id="chatForm">
+        <input
+                id="content"
+                placeholder="Type a message..."
+                required
+                maxlength="2000"
+        >
+        <button type="submit">Send Message</button>
+    </form>
+</div>
+
+<script type="module">
+    import { Client } from
+            "https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.1.1/esm6/index.js";
+
+    const status = document.getElementById("status");
+    const messages = document.getElementById("messages");
+    const form = document.getElementById("chatForm");
+
+    // Display a message safely
+    function renderMessage(data) {
+        const item = document.createElement("div");
+        item.className = "message";
+        item.textContent = `${data.sender}: ${data.content}`;
+
+        messages.appendChild(item);
+        messages.scrollTop = messages.scrollHeight;
+    }
+
+    // WebSocket client
+    const client = new Client({
+        brokerURL: "ws://localhost:8080/ws",
+        reconnectDelay: 5000,
+
+        onConnect: () => {
+            status.textContent = "Connected ✅";
+
+            client.subscribe("/topic/messages", (frame) => {
+                try {
+                    const data = JSON.parse(frame.body);
+                    renderMessage(data);
+                } catch (error) {
+                    console.error("Invalid message:", error);
+                }
+            });
+        },
+
+        onWebSocketError: (error) => {
+            status.textContent = "WebSocket connection error ❌";
+            console.error(error);
+        },
+
+        onStompError: (frame) => {
+            status.textContent = "STOMP error ❌";
+            console.error(frame.headers, frame.body);
+        }
+    });
+
+    client.activate();
+
+    // Send a real-time chat message
+    form.addEventListener("submit", (event) => {
+        event.preventDefault();
+
+        if (!client.connected) {
+            alert("Chat server se connection nahi hai.");
+            return;
+        }
+
+        const sender =
+            document.getElementById("sender").value.trim();
+
+        const content =
+            document.getElementById("content").value.trim();
+
+        if (!sender || !content) {
+            return;
+        }
+
+        client.publish({
+            destination: "/app/chat",
+            body: JSON.stringify({
+                sender: sender,
+                content: content
+            })
+        });
+
+        document.getElementById("content").value = "";
+    });
+
+    // Fetch previously saved messages from the database
+    document.getElementById("loadHistory")
+        .addEventListener("click", async () => {
+            const token =
+                document.getElementById("jwtToken").value.trim();
+
+            if (!token) {
+                alert("Please paste your JWT token first.");
+                return;
+            }
+
+            try {
+                const response = await fetch("/api/chat/history", {
+                    method: "GET",
+                    headers: {
+                        "Authorization": `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const history = await response.json();
+
+                messages.replaceChildren();
+
+                history.forEach((message) => {
+                    renderMessage(message);
+                });
+
+                if (history.length === 0) {
+                    messages.textContent = "No previous messages found.";
+                }
+
+            } catch (error) {
+                console.error("History error:", error);
+                alert(
+                    "Could not load chat history. " +
+                    "Check your JWT token and API."
+                );
+            }
+        });
+</script>
+</body>
+</html>

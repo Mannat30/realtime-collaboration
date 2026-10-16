@@ -33,15 +33,13 @@ public class SecurityConfig {
                         ))
 
                 .authorizeHttpRequests(auth -> auth
-
                         .requestMatchers(
-                                "/api/auth/register",
-                                "/api/auth/login",
+                                "/api/auth/**",
+                                "/chat-test.html",
+                                "/ws",
                                 "/ws/**"
                         ).permitAll()
-
-                        .anyRequest()
-                        .authenticated()
+                        .anyRequest().authenticated()
                 )
 
                 .addFilterBefore(
