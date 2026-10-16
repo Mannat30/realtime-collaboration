@@ -15,4 +15,7 @@ server:
 
 jwt:
   secret: YOUR_BASE64_JWT_SECRET
-  expiration: 86400000
+  expiration: 86400000/target/
+/package-lock.json
+/src/main/resources/application.yaml
+target/
