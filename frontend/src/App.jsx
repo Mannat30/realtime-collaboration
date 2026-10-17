@@ -8,6 +8,7 @@ const API = '/api/auth';
 
 function App() {
   const [mode, setMode] = useState('login');
+
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -33,19 +34,34 @@ function App() {
           'User1'
   );
 
+  // Group chat
   const [messages, setMessages] = useState([]);
   const [content, setContent] = useState('');
+
   const [connectionStatus, setConnectionStatus] =
       useState('Connecting...');
+
   const [chatError, setChatError] = useState('');
 
+  // Private chat
+  const [receiverEmail, setReceiverEmail] = useState('');
+  const [privateContent, setPrivateContent] = useState('');
+  const [privateMessages, setPrivateMessages] = useState([]);
+  const [privateError, setPrivateError] = useState('');
+  const [privateLoading, setPrivateLoading] = useState(false);
+
   const clientRef = useRef(null);
+  const selectedRecipientRef = useRef('');
+
+  // Keep the currently selected conversation available to
+  // the WebSocket callback without reconnecting on every keystroke.
+  selectedRecipientRef.current = receiverEmail.trim().toLowerCase();
 
   const isRegister = mode === 'register';
 
-  // Connect to chat and load previous messages after login
+  // Connect to the authenticated WebSocket and load group history.
   useEffect(() => {
-    if (!token) return;
+    if (!token) return undefined;
 
     let active = true;
     let client;
@@ -67,7 +83,7 @@ function App() {
       } catch (err) {
         if (active) {
           setChatError(
-              `Could not load chat history (HTTP ${
+              `Could not load group history (HTTP ${
                   err.response?.status || 'network error'
               }).`
           );
@@ -78,13 +94,21 @@ function App() {
 
       client = new Client({
         brokerURL: 'ws://localhost:8080/ws',
+
+        // JWT is sent in the STOMP CONNECT frame.
+        connectHeaders: {
+          Authorization: `Bearer ${token}`
+        },
+
         reconnectDelay: 5000,
 
         onConnect: () => {
           if (!active) return;
 
           setConnectionStatus('Connected');
+          setChatError('');
 
+          // Subscribe to group messages.
           client.subscribe('/topic/messages', (frame) => {
             try {
               const message = JSON.parse(frame.body);
@@ -92,7 +116,6 @@ function App() {
               if (!active) return;
 
               setMessages((previous) => {
-                // Prevent duplicate display of an already loaded message
                 if (
                     message.id != null &&
                     previous.some((item) => item.id === message.id)
@@ -103,22 +126,83 @@ function App() {
                 return [...previous, message];
               });
             } catch (err) {
-              console.error('Invalid chat message:', err);
+              console.error('Invalid group message:', err);
+            }
+          });
+
+          // Subscribe to messages delivered to this authenticated user.
+          client.subscribe('/user/queue/private', (frame) => {
+            try {
+              const message = JSON.parse(frame.body);
+
+              if (!active) return;
+
+              const me = currentEmail.trim().toLowerCase();
+              const selected =
+                  selectedRecipientRef.current;
+
+              const sender = (
+                  message.senderEmail || ''
+              ).toLowerCase();
+
+              const receiver = (
+                  message.receiverEmail || ''
+              ).toLowerCase();
+
+              // Display a private message only in its matching
+              // conversation. The backend still enforces access.
+              const belongsToSelectedConversation =
+                  selected &&
+                  (
+                      (sender === me && receiver === selected) ||
+                      (sender === selected && receiver === me)
+                  );
+
+              if (!belongsToSelectedConversation) return;
+
+              setPrivateMessages((previous) => {
+                if (
+                    message.id != null &&
+                    previous.some((item) => item.id === message.id)
+                ) {
+                  return previous;
+                }
+
+                return [...previous, message];
+              });
+            } catch (err) {
+              console.error('Invalid private message:', err);
             }
           });
         },
 
-        onWebSocketError: () => {
+        onWebSocketError: (err) => {
           if (active) {
             setConnectionStatus('Connection error');
           }
+
+          console.error('WebSocket error:', err);
         },
 
         onStompError: (frame) => {
           if (active) {
             setConnectionStatus('Chat error');
+            setChatError(
+                'Chat connection rejected. Check JWT authentication and backend logs.'
+            );
           }
-          console.error('STOMP error:', frame.headers, frame.body);
+
+          console.error(
+              'STOMP error:',
+              frame.headers,
+              frame.body
+          );
+        },
+
+        onDisconnect: () => {
+          if (active) {
+            setConnectionStatus('Disconnected');
+          }
         }
       });
 
@@ -126,7 +210,7 @@ function App() {
       client.activate();
     }
 
-    startChat();
+    void startChat();
 
     return () => {
       active = false;
@@ -139,31 +223,38 @@ function App() {
         void client.deactivate();
       }
     };
-  }, [token]);
+  }, [token, currentEmail]);
 
   function handleChange(event) {
-    setForm({
-      ...form,
+    setForm((previous) => ({
+      ...previous,
       [event.target.name]: event.target.value
-    });
+    }));
   }
 
+  // Register or log in.
   async function handleSubmit(event) {
     event.preventDefault();
+
     setError('');
     setNotice('');
     setLoading(true);
 
     try {
       if (isRegister) {
-        await axios.post(`${API}/register`, {
+        const response = await axios.post(`${API}/register`, {
           name: form.name.trim(),
           email: form.email.trim(),
           password: form.password
         });
 
         setMode('login');
-        setNotice('Registration successful! Please log in.');
+
+        setNotice(
+            typeof response.data === 'string'
+                ? response.data
+                : 'Registration successful! Please log in.'
+        );
 
         setForm({
           name: '',
@@ -190,66 +281,168 @@ function App() {
                     data?.data?.token
                 );
 
-        if (!jwt) {
-          throw new Error('JWT token was not returned by the API.');
+        if (typeof jwt !== 'string' || !jwt.trim()) {
+          throw new Error(
+              'JWT token was not returned by the login API.'
+          );
         }
 
         const email = form.email.trim();
         const name = email.split('@')[0] || 'User1';
 
-        sessionStorage.setItem('token', jwt);
+        sessionStorage.setItem('token', jwt.trim());
         sessionStorage.setItem('email', email);
         sessionStorage.setItem('displayName', name);
 
         setCurrentEmail(email);
         setDisplayName(name);
-        setToken(jwt);
+        setToken(jwt.trim());
+
         setMessages([]);
+        setPrivateMessages([]);
         setNotice('');
+        setChatError('');
+        setPrivateError('');
       }
     } catch (err) {
       const serverMessage =
           err.response?.data?.message ||
-          (typeof err.response?.data === 'string'
-              ? err.response.data
-              : '');
+          (
+              typeof err.response?.data === 'string'
+                  ? err.response.data
+                  : ''
+          );
 
       setError(
-          serverMessage || err.message || 'Request failed.'
+          serverMessage ||
+          err.message ||
+          'Request failed. Please try again.'
       );
     } finally {
       setLoading(false);
     }
   }
 
+  // Send a group message.
   function sendMessage(event) {
     event.preventDefault();
 
-    const messageText = content.trim();
-    const sender = displayName.trim();
-
-    if (!messageText || !sender) return;
-
+    const text = content.trim();
     const client = clientRef.current;
 
+    if (!text) return;
+
     if (!client?.connected) {
-      setChatError('Chat is not connected. Please wait and retry.');
+      setChatError('WebSocket is not connected.');
       return;
     }
 
-    client.publish({
-      destination: '/app/chat',
-      body: JSON.stringify({
-        sender,
-        content: messageText
-      })
-    });
+    try {
+      client.publish({
+        destination: '/app/chat',
+        body: JSON.stringify({
+          content: text
+        })
+      });
 
-    setContent('');
-    setChatError('');
+      setContent('');
+      setChatError('');
+    } catch (err) {
+      console.error('Group message error:', err);
+      setChatError('Could not send the group message.');
+    }
+  }
+
+  // Load conversation between the current user and the selected recipient.
+  async function loadPrivateHistory(event) {
+    event.preventDefault();
+
+    const recipient = receiverEmail.trim();
+
+    if (!recipient) {
+      setPrivateError('Enter the recipient email.');
+      return;
+    }
+
+    if (recipient.toLowerCase() === currentEmail.toLowerCase()) {
+      setPrivateError('Choose another registered user.');
+      return;
+    }
+
+    selectedRecipientRef.current = recipient.toLowerCase();
+
+    setPrivateLoading(true);
+    setPrivateError('');
+    setPrivateMessages([]);
+
+    try {
+      const response = await axios.get('/api/private/messages', {
+        params: {
+          with: recipient
+        },
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+
+      setPrivateMessages(
+          Array.isArray(response.data) ? response.data : []
+      );
+    } catch (err) {
+      setPrivateError(
+          `Could not load private history (HTTP ${
+              err.response?.status || 'network error'
+          }).`
+      );
+    } finally {
+      setPrivateLoading(false);
+    }
+  }
+
+  // Send a private message; sender identity is established by the backend.
+  function sendPrivateMessage(event) {
+    event.preventDefault();
+
+    const recipient = receiverEmail.trim();
+    const text = privateContent.trim();
+    const client = clientRef.current;
+
+    if (!recipient || !text) {
+      setPrivateError('Enter a recipient and message.');
+      return;
+    }
+
+    if (recipient.toLowerCase() === currentEmail.toLowerCase()) {
+      setPrivateError('You cannot send a private message to yourself.');
+      return;
+    }
+
+    if (!client?.connected) {
+      setPrivateError('WebSocket is not connected.');
+      return;
+    }
+
+    selectedRecipientRef.current = recipient.toLowerCase();
+
+    try {
+      client.publish({
+        destination: '/app/private-chat',
+        body: JSON.stringify({
+          receiverEmail: recipient,
+          content: text
+        })
+      });
+
+      setPrivateContent('');
+      setPrivateError('');
+    } catch (err) {
+      console.error('Private message error:', err);
+      setPrivateError('Could not send the private message.');
+    }
   }
 
   function logout() {
+    // The effect cleanup disconnects the WebSocket when the token clears.
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('email');
     sessionStorage.removeItem('displayName');
@@ -257,15 +450,23 @@ function App() {
     setToken('');
     setCurrentEmail('');
     setDisplayName('User1');
+
     setMessages([]);
     setContent('');
+
+    setReceiverEmail('');
+    setPrivateContent('');
+    setPrivateMessages([]);
+
     setError('');
-    setChatError('');
     setNotice('');
+    setChatError('');
+    setPrivateError('');
+    setConnectionStatus('Disconnected');
     setMode('login');
   }
 
-  // Login and registration screen
+  // Login and registration UI.
   if (!token) {
     return (
         <main className="page">
@@ -388,7 +589,7 @@ function App() {
     );
   }
 
-  // Logged-in chat screen
+  // Authenticated chat dashboard.
   return (
       <main className="page">
         <section className="auth-card chat-card">
@@ -411,20 +612,30 @@ function App() {
           </header>
 
           <div className="success-panel">
-            <span className="status-dot"></span>
+          <span
+              className={
+                connectionStatus === 'Connected'
+                    ? 'status-dot'
+                    : 'status-dot status-dot-offline'
+              }
+          />
             WebSocket: {connectionStatus}
           </div>
+
+          {chatError && (
+              <div className="alert error" role="alert">
+                {chatError}
+              </div>
+          )}
 
           <label className="name-field">
             Display name
             <input
                 value={displayName}
                 onChange={(event) => {
-                  setDisplayName(event.target.value);
-                  sessionStorage.setItem(
-                      'displayName',
-                      event.target.value
-                  );
+                  const name = event.target.value;
+                  setDisplayName(name);
+                  sessionStorage.setItem('displayName', name);
                 }}
                 maxLength={50}
                 required
@@ -432,16 +643,14 @@ function App() {
           </label>
 
           <div className="chat-toolbar">
-            <h2>Messages</h2>
+            <h2>Group Chat</h2>
             <span>{messages.length} loaded</span>
           </div>
 
           <div className="chat-list" aria-live="polite">
             {messages.length === 0 ? (
                 <div className="empty-chat">
-                  {chatError
-                      ? 'Chat history could not be loaded.'
-                      : 'No messages yet. Start the conversation!'}
+                  No group messages yet. Start the conversation!
                 </div>
             ) : (
                 messages.map((message, index) => (
@@ -456,7 +665,10 @@ function App() {
                             <time>
                               {new Date(message.sentAt).toLocaleTimeString(
                                   [],
-                                  { hour: '2-digit', minute: '2-digit' }
+                                  {
+                                    hour: '2-digit',
+                                    minute: '2-digit'
+                                  }
                               )}
                             </time>
                         )}
@@ -468,29 +680,131 @@ function App() {
             )}
           </div>
 
-          {chatError && (
-              <div className="alert error" role="alert">
-                {chatError}
-              </div>
-          )}
-
           <form className="chat-compose" onSubmit={sendMessage}>
             <input
                 value={content}
                 onChange={(event) => setContent(event.target.value)}
-                placeholder="Write a message..."
+                placeholder="Write a group message..."
                 maxLength={2000}
                 required
             />
 
-            <button className="primary-button" type="submit">
+            <button
+                className="primary-button"
+                type="submit"
+            >
               Send
             </button>
           </form>
 
           <p className="small-note">
-            Messages are saved to your chat history.
+            Group messages are saved to chat history.
           </p>
+
+          {/* Private chat */}
+          <section className="private-chat">
+            <p className="eyebrow">ONE-TO-ONE MESSAGING</p>
+            <h2>Private Chat</h2>
+
+            <form
+                className="private-recipient-form"
+                onSubmit={loadPrivateHistory}
+            >
+              <label>
+                Recipient email
+                <input
+                    type="email"
+                    value={receiverEmail}
+                    onChange={(event) =>
+                        setReceiverEmail(event.target.value)
+                    }
+                    placeholder="friend@example.com"
+                    required
+                />
+              </label>
+
+              <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={privateLoading}
+              >
+                {privateLoading ? 'Loading...' : 'Load Conversation'}
+              </button>
+            </form>
+
+            {privateError && (
+                <div className="alert error" role="alert">
+                  {privateError}
+                </div>
+            )}
+
+            <div
+                className="chat-list private-chat-list"
+                aria-live="polite"
+            >
+              {privateMessages.length === 0 ? (
+                  <div className="empty-chat">
+                    Select a registered user to view the private conversation.
+                  </div>
+              ) : (
+                  privateMessages.map((message, index) => (
+                      <article
+                          className="chat-message"
+                          key={message.id ?? `${message.sentAt}-${index}`}
+                      >
+                        <div className="chat-message-meta">
+                          <strong>
+                            {message.senderEmail?.toLowerCase() ===
+                            currentEmail.toLowerCase()
+                                ? 'You'
+                                : message.senderEmail}
+                          </strong>
+
+                          {message.sentAt && (
+                              <time>
+                                {new Date(message.sentAt).toLocaleTimeString(
+                                    [],
+                                    {
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    }
+                                )}
+                              </time>
+                          )}
+                        </div>
+
+                        <p>{message.content}</p>
+                      </article>
+                  ))
+              )}
+            </div>
+
+            <form
+                className="chat-compose"
+                onSubmit={sendPrivateMessage}
+            >
+              <input
+                  value={privateContent}
+                  onChange={(event) =>
+                      setPrivateContent(event.target.value)
+                  }
+                  placeholder="Write a private message..."
+                  maxLength={2000}
+                  required
+              />
+
+              <button
+                  className="primary-button"
+                  type="submit"
+              >
+                Send privately
+              </button>
+            </form>
+
+            <p className="small-note">
+              Private messages are stored separately from group messages.
+            </p>
+          </section>
         </section>
       </main>
   );
