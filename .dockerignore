@@ -1,0 +1,13 @@
+.git
+.idea/
+*.iml
+target/
+**/target/
+frontend/node_modules/
+frontend/dist/
+**/node_modules/
+.env
+.env.*
+!.env.example
+src/main/resources/application.yaml
+**/application-local.yaml

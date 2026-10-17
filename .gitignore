@@ -19,3 +19,8 @@ jwt:
 /package-lock.json
 /src/main/resources/application.yaml
 target/
+
+# Local environment secrets
+.env
+.env.*
+!.env.example

@@ -93,7 +93,7 @@ function App() {
       if (!active) return;
 
       client = new Client({
-        brokerURL: 'ws://localhost:8080/ws',
+        brokerURL: `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`,
 
         // JWT is sent in the STOMP CONNECT frame.
         connectHeaders: {
